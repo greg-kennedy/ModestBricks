@@ -22,13 +22,7 @@
 
 #include <SDL/SDL.h>
 
-
-long getMS()
-{
-	return SDL_GetTicks();
-}
-
-int main()
+int main(int argc, char* argv[])
 {
 	int kD=0;
 
@@ -498,7 +492,7 @@ int main()
 	paused=0;
 
 	while (playing) {	// All right, they're playing.
-		starting=getMS();
+		starting=SDL_GetTicks();
     /* Nextmove==0 means we need to do line checking and piece giving. */
 		if (nextmove==0) {
 			for(j=0;j<10;j++)
@@ -793,9 +787,9 @@ int main()
 		if (nextmove != 0) {
 		offt++;
     /* The piece has moved down, now we can start looking for keypresses */
-		while (starting+(250-level*20)>getMS() && starting+(250-kD*220)>getMS() && nextmove!=0){
+		while (starting+(250-level*20)>SDL_GetTicks() && starting+(250-kD*220)>SDL_GetTicks() && nextmove!=0){
 			if(paused==1) 
-				starting=getMS();
+				starting=SDL_GetTicks();
 			if (SDL_PollEvent(&event)>0)
 			switch (event.type) {
 				case SDL_KEYUP:
