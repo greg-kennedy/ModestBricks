@@ -548,6 +548,8 @@ int main(int argc, char* argv[])
 
 							// test completed lines
 							int tetri = 0;
+							// TODO: consider that we only need to test the lines
+							//	around y, and not all 20...
 							for(int j = 0; j < 20; j++)
 							{
 								int i;
@@ -557,6 +559,8 @@ int main(int argc, char* argv[])
 								if (i == 10) {
 									tetri++;
 
+									// TODO: The next block may be called 4x,
+									//	maybe count lines and do one move at end
 									// shift everything down from the top
 									memmove(&board[1], &board[0], 10 * j);
 									// set top line to empty
@@ -646,6 +650,10 @@ int main(int argc, char* argv[])
 					needs_flip = 1;
 				}
 
+				// TODO: The next block redraws the entire playfield
+				//	every frame, which is inefficient:
+				// It should be possible to split this from draw_piece
+				//  and only update the piece instead.
 				if (field_dirty) {
 					/* redraw board */
 					SDL_Rect r;
