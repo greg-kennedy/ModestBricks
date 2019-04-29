@@ -13,7 +13,7 @@ Compiler=
 CppCompiler=
 Linker=-lmingw32 -lSDLMain -lSDL -lSDL_mixer_@@_
 IsCpp=0
-Icon=tetimg\icon.ico
+Icon=icon.ico
 ExeOutput=
 ObjectOutput=
 LogOutput=
@@ -28,7 +28,7 @@ Folders=
 IncludeVersionInfo=0
 SupportXPThemes=0
 CompilerSet=3
-CompilerSettings=000d0ca1a0110000000001001
+CompilerSettings=000d0cb1a0110000000001001
 UnitCount=1
 
 [VersionInfo]

@@ -1,937 +1,757 @@
 /* Modest Bricks by Greg Kennedy
-  Feb. 2 2005
-   Yet another Tetris clone.  This is my first real attempt at using
-   SDL.  Pardon the messy code layout, I really have no idea where to
-   start with encapsulation.  Oh well.  */
-   
-/* I took the advice of a guide I saw and went all out on this one.  Scoring,
-  high score, levels and speed increases, lookahead, custom sound effect and music,
-  game options... the whole works.  The code is a total wreck and I'm glad not to
-  have to look at it again (except maybe trying to do Linux port work) but maybe,
-  just maybe, you could glean something from it.  Good luck. */
+	Feb. 2 2005
+	Yet another Tetris clone.
 
+	I took the advice of a guide I saw and went all out on this one.  Scoring,
+	high score, levels and speed increases, lookahead, custom sound effect and
+	music, game options... the whole works. */
+
+/* ************************************************************************ */
+// INCLUDES
+#include <SDL/SDL.h>
+#include <SDL/SDL_mixer.h>
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <SDL/SDL.h>
-#include <SDL/SDL_mixer.h>
 
 #include <ctype.h>
 #include <time.h>
 
-#include <SDL/SDL.h>
+/* ************************************************************************ */
+// CONSTANTS
+//	Define the piece shapes
+const int base_piece_x[7][4] = {
+	{ -1, 0, 1, 2 },	// line
+	{ -1, 0, 1, 1 },	// backwards L
+	{ -1, -1, 0, 1 },	// L
+	{ 0, 1, 1, 0 },		// square
+	{ -1, 0, 0, 1 },	// S
+	{ -1, 0, 0, 1 },	// Z
+	{ 0, -1, 0, 1 }		// T
+};
 
+const int base_piece_y[7][4] = {
+	{ 0, 0, 0, 0 },		// line
+	{ 0, 0, 0, -1 },	// backwards L
+	{ -1, 0, 0, 0 },	// L
+	{ 0, 0, -1, -1 },	// square
+	{ 0, 0, -1, -1 },	// S
+	{ -1, -1, 0, 0 },	// Z
+	{ -1, 0, 0, 0 }		// T
+};
+
+/* ************************************************************************ */
+// GLOBALS
+SDL_Surface* screen;
+SDL_Surface* numbers;
+
+/* ************************************************************************ */
+// HELPER FUNCTIONS
+//	test if point is in rect
+int in(const int x, const int y,
+	const int r_x, const int r_y, const int r_w, const int r_h)
+{
+	return (x >= r_x && x < r_x + r_w && y >= r_y && y < r_y + r_h);
+}
+
+// SDL additions
+//	Function to load a BMP from a file, and convert it to the screen surface
+SDL_Surface* load_image(const char* path)
+{
+	SDL_Surface* img = SDL_LoadBMP(path);
+	if (! img)
+	{
+		fprintf(stderr, "load_image: ERROR: Failed to load image '%s': %s\n",
+			path, SDL_GetError());
+		exit(1);
+	}
+
+	// convert loaded surface to our display format
+	SDL_Surface* conv = SDL_DisplayFormat(img);
+
+	if (! conv)
+	{
+		fprintf(stderr, "load_image: Warning: Failed to convert image '%s': %s\n",
+			path, SDL_GetError());
+
+		// the original may still be usable though
+		return img;
+	}
+
+	// don't need img any more
+	SDL_FreeSurface(img);
+
+	return conv;
+}
+
+//	draw surface on screen at x, y
+void blit(const int x, const int y, SDL_Surface* s)
+{
+	SDL_Rect rect;
+	rect.x = x;
+	rect.y = y;
+	SDL_BlitSurface(s, NULL, screen, &rect);
+}
+
+//	Draw a number (final digit positioned at x, y)
+void blit_number(const int x, const int y, int number)
+{
+	SDL_Rect src;
+	SDL_Rect dst;
+
+	src.x = src.y = 0;
+	src.w = 16;
+	src.h = 32;
+
+	dst.x = x;
+	dst.y = y;
+
+	/* To show the value score, we start from the right and put numbers going
+		left until we run out of numbers in the score. */
+	do
+	{
+		src.x = (number % 10) * 16;
+		SDL_BlitSurface(numbers, &src, screen, &dst);
+
+		number /= 10;
+		dst.x -= 17;
+	} while (number > 0);
+}
+
+// Tetris Piece functions
+//	Draws a piece on the screen
+void draw_piece(const int x, const int y,
+	const int piece_x[4], const int piece_y[4], SDL_Surface* img)
+{
+	for (int i = 0; i < 4; i++)
+	{
+		int px = x + 24 * piece_x[i];
+		int py = y + 24 * piece_y[i];
+		if (in(px, py, 0, 0, 380, 504))
+			blit(px, py, img);
+	}
+}
+
+//	Test if the piece overlaps the board at this point
+int test_overlap(char board[20][10], const int x, const int y,
+	const int piece_x[4], const int piece_y[4])
+{
+	for (int i = 0; i < 4; i++)
+	{
+		// test out-of-bounds move
+		if (x + piece_x[i] < 0) return 1;
+		if (x + piece_x[i] > 9) return 1;
+		if (y + piece_y[i] > 19) return 1;
+
+		// do not test off-screen collision
+		if (y + piece_y[i] < 0) continue;
+
+		// test overlap
+		if (board[y + piece_y[i]][x + piece_x[i]]) return 1;
+	}
+
+	return 0;
+}
+
+
+/* ************************************************************************ */
+// MAIN ENTRY POINT
 int main(int argc, char* argv[])
 {
-	int kD=0;
-
-    Mix_Music *music = NULL;   /* SDL_Mixer stuff here */
-    Mix_Chunk *crash = NULL;
-
-	SDL_Surface *screen;	/*main screen, temp bitmap, seven block images */
-	SDL_Surface *bitmap = NULL;    /* also a surface for the numbers */
-	SDL_Surface *bimg[7];
-	SDL_Surface *numbers;
-
-	SDL_Rect src,dst,play,quit,mus,sfx;		/*temp rectangles, four block pieces */
-	SDL_Rect block[4];
-
-	int i, j, sfxon=1,muson=1,tetri,playing=0,offl=0,offt=0,nextmove=0,cur=0,lookahead,menuevent=0,level=0,lines=0,linectr,p,q,paused=0;
-	long starting;
-	long score,hiscore,tscore;     /* I sure do use a lot of variables... */
-	SDL_Event event;
-	FILE* hifile;
-
-//	int crashChannel = -1;
-
-
-  int audio_rate = 44100;
-  Uint16 audio_format = AUDIO_S16; /* 16-bit stereo */
-  int audio_channels = 2;
-  int audio_buffers = 4096;
-
-	typedef struct {       /* A structure to hold piece information. */
-		int b1x;
-		int b1y;
-		int b2x;
-		int b2y;
-		int b3x;
-		int b3y;
-		int b4x;
-		int b4y;
-	} piecestruct;
-
-	piecestruct piece;        /* we need one for current and one for next piece */
-	piecestruct nextpiece;
-	
+	// COMMON VARS
+	//	temporary buffer variable
 	char tempstring[20];
 
-	char board[10][21] ={{0}};		/* board positions */
-	char bmpname[18]="tetimg/0brick.bmp";
-
-	/* Initialize SDL */
+	/* ******************************************************************** */
+	// Initialize SDL
 	if ( SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) < 0 ) {
-		fprintf(stderr, "Couldn't initialize SDL: %s\n",SDL_GetError());
+		fprintf(stderr, "Couldn't initialize SDL: %s\n", SDL_GetError());
 		exit(1);
 	}
+	// register SDL_Quit to be called at termination
 	atexit(SDL_Quit);
-	
-	/* I want to load the first block image and then make that my window icon. */
-    SDL_WM_SetIcon(SDL_LoadBMP("tetimg/1brick.bmp"), NULL);
- 
-    /* I want a 380x504 window, double buffered, any format (16/32 bit color) */
-	screen=SDL_SetVideoMode(380,504,0,SDL_ANYFORMAT | SDL_DOUBLEBUF);
+
+	// Load the image and then make that my window icon.
+	SDL_WM_SetIcon(SDL_LoadBMP("tetimg/icon.bmp"), NULL);
+	SDL_WM_SetCaption("Modest Bricks", NULL);
+
+	// I want a 380x504 window, double buffered, any format (16/32 bit color)
+	screen = SDL_SetVideoMode(380, 504, 0, SDL_ANYFORMAT | SDL_HWSURFACE | SDL_DOUBLEBUF);
+	if (screen == NULL) {
+		fprintf(stderr, "Failed to open 380x504px window: %s\n", SDL_GetError());
+		exit(1);
+	}
+
+	// Load all the BMP files we need
+	//	Numbers atlas
+	numbers = load_image("tetimg/numbers.bmp");
+
+	//	Block images
+	SDL_Surface* bimg[7] = { NULL };
+	for(int i = 0; i < 7; i++)
+	{
+		sprintf(tempstring, "tetimg/%dbrick.bmp", i + 1);
+		bimg[i] = load_image(tempstring);
+	}
+
+	//	UI items
+	SDL_Surface* title = load_image("tetimg/title.bmp");
+	SDL_Surface* play = load_image("tetimg/play.bmp");
+	SDL_Surface* musicon = load_image("tetimg/musicon.bmp");
+	SDL_Surface* musicoff = load_image("tetimg/musicoff.bmp");
+	SDL_Surface* sfxon = load_image("tetimg/sfxon.bmp");
+	SDL_Surface* sfxoff = load_image("tetimg/sfxoff.bmp");
+	SDL_Surface* quit = load_image("tetimg/quit.bmp");
+	SDL_Surface* author = load_image("tetimg/author.bmp");
+	SDL_Surface* level = load_image("tetimg/level.bmp");
+	SDL_Surface* score = load_image("tetimg/score.bmp");
+	SDL_Surface* high = load_image("tetimg/high.bmp");
+	SDL_Surface* next = load_image("tetimg/next.bmp");
+	SDL_Surface* line = load_image("tetimg/line.bmp");
+	SDL_Surface* vline = load_image("tetimg/vline.bmp");
+	SDL_Surface* lose = load_image("tetimg/lose.bmp");
+
+	//	Solid black color
+	const Uint32 black = SDL_MapRGB(screen->format, 0, 0, 0);
+
+	/* ******************************************************************** */
+	/* This is where we open up our audio device.  Mix_OpenAudio takes
+		as its parameters the audio format we'd /like/ to have. */
+	Mix_Chunk* chunk = NULL;
+	Mix_Music* music = NULL;
+	if(Mix_OpenAudio(22050, AUDIO_S16, 2, 2048))
+	{
+		// Failed to open the sound device
+		fprintf(stderr, "Unable to open audio: %s\n", Mix_GetError());
+	} else {
+		/* If we actually care about what we got, we can ask here.  In this
+			program we don't, but I'm showing the function call here anyway
+			in case we'd want to know later. */
+		// Mix_QuerySpec(&audio_rate, &audio_format, &audio_channels);
+
+		// This is loading a sound effect for a block landing.
+		if (! (chunk = Mix_LoadWAV("fall.wav")))
+			fprintf(stderr, "Unable to load 'fall.wav' sample: %s\n", Mix_GetError());
+
+		// This is the music to play.
+		if (! (music = Mix_LoadMUS("modest.mid")))
+			fprintf(stderr, "Unable to load 'modest.mid' music file: %s\n", Mix_GetError());
+	}
+
+	/* ******************************************************************** */
+	// Get high score data
+	//	default values
+	int hiscore = 1;
+	int music_on = 1;
+	int sfx_on = 1;
+
+	FILE* hifile = fopen("hiscore.dat", "r");
+	if (hifile)
+	{
+		// read data from file
+		fscanf(hifile, "%19s", tempstring);
+		music_on = atoi(tempstring);
+		fscanf(hifile, "%19s", tempstring);
+		sfx_on = atoi(tempstring);
+		fscanf(hifile, "%19s", tempstring);
+		hiscore = atoi(tempstring);
+
+		fclose(hifile);
+	}
+
+	if (music_on && music)
+		Mix_PlayMusic(music, -1);
+
+	/* ******************************************************************** */
+
+	// seed the RNG
 	srand((unsigned)time(NULL));
 
-/* This is where we open up our audio device.  Mix_OpenAudio takes
-     as its parameters the audio format we'd /like/ to have. */
-  if(Mix_OpenAudio(audio_rate, audio_format, audio_channels, audio_buffers)) {
-    printf("Unable to open audio!\n");
-    exit(1);
-  }
+	// Gamestates we can be in:
+	//	* waiting at main menu
+	//	* playing a game
+	//	* quitting
+	enum { state_menu, state_play, state_quit } state = state_menu;
 
-  /* If we actually care about what we got, we can ask here.  In this
-     program we don't, but I'm showing the function call here anyway
-     in case we'd want to know later. */
-  Mix_QuerySpec(&audio_rate, &audio_format, &audio_channels);
+	do
+	{
+		if (state == state_menu)
+		{
+			/* MAIN MENU */
+			int dirty = 1;
+			int mus_dirty = 1;
+			int sfx_dirty = 1;
 
-  /* This is loading a sound effect for a block landing. */
-  crash = Mix_LoadWAV("fall.wav");
-
-  /* This is the music to play. */
-	music = Mix_LoadMUS("modest.mid");
-
-
-
-	for(i=0;i<7;i++) {	/* load the other six block bitmaps */
-		bmpname[7]=toascii(i+49);
-		bimg[i]=SDL_LoadBMP(bmpname);
-		if ( bimg[i]  == NULL ) {
-			printf("Unable to load %s.\n",bmpname);
-			exit(1);
-		}
-	}
-	
-	/* Load the numbers images */
-	numbers=SDL_LoadBMP("tetimg/numbers.bmp");
-	if (numbers == NULL){
-	 printf("Unable to load all bitmaps.\n");
-	 exit(1);
-    }
-    
-    /* Get high score data */
-    hifile=fopen("hiscore.dat","r");
-    if (hifile==NULL)
-    {
-        hifile=fopen("hiscore.dat","w");
-        fputs("1 1 1",hifile);
-        fclose(hifile);
-        hiscore=1;
-    }else{
-        fscanf(hifile,"%s",tempstring);
-        muson=atol(tempstring);
-        fscanf(hifile,"%s",tempstring);
-        sfxon=atol(tempstring);
-        fscanf(hifile,"%s",tempstring);
-        hiscore=atol(tempstring);
-    }
-
-    if (muson==1)
-    	Mix_PlayMusic(music, -1);
-
-    /* now loop forever */
-    
-    while(1){
-	while (!playing) {		/*if not playing and not quitting */
-					/* here we draw the main menu */
-					
-	/* basically the main menu works like this:  we'll fill the whole screen
-	   in black, then open all the images one by one to make up the screen
-	   including borders, title and buttons and checkboxes, etc.  Also we
-	   draw the current high score on the right. */
-
-	SDL_WM_SetCaption("Modest Bricks", NULL);
-	SDL_FillRect(screen,NULL,SDL_MapRGB(screen->format,0,0,0));
-	bitmap=SDL_LoadBMP("tetimg/title.bmp");
-	if ( bitmap == NULL ) {
-		printf("Unable to load all bitmaps.\n");
-		exit(1);
-	}
-	dst.x=0;
-	dst.y=0;
-	dst.w=bitmap->w;
-	dst.h=bitmap->h;
-	SDL_BlitSurface(bitmap,NULL,screen,&dst);
-
-	SDL_FreeSurface(bitmap);
-
-	bitmap=SDL_LoadBMP("tetimg/play.bmp");
-	if ( bitmap == NULL ) {
-		printf("Unable to load all bitmaps.\n");
-		exit(1);
-	}
-	play.x=60;
-	play.y=240;
-	play.w=bitmap->w;
-	play.h=bitmap->h;
-	SDL_BlitSurface(bitmap,NULL,screen,&play);
-	SDL_FreeSurface(bitmap);
-
-    if (muson==1)
-    	bitmap=SDL_LoadBMP("tetimg/musicon.bmp");
-   	else
-    	bitmap=SDL_LoadBMP("tetimg/musicoff.bmp");
-	if ( bitmap == NULL ) {
-		printf("Unable to load all bitmaps.\n");
-		exit(1);
-	}
-	mus.x=50;
-	mus.y=185;
-	mus.w=bitmap->w;
-	mus.h=bitmap->h;
-	SDL_BlitSurface(bitmap,NULL,screen,&mus);
-	SDL_FreeSurface(bitmap);
-
-    if (sfxon==1)
-    	bitmap=SDL_LoadBMP("tetimg/sfxon.bmp");
-   	else
-    	bitmap=SDL_LoadBMP("tetimg/sfxoff.bmp");
-	if ( bitmap == NULL ) {
-		printf("Unable to load all bitmaps.\n");
-		exit(1);
-	}
-	sfx.x=140;
-	sfx.y=185;
-	sfx.w=bitmap->w;
-	sfx.h=bitmap->h;
-	SDL_BlitSurface(bitmap,NULL,screen,&sfx);
-
-	SDL_FreeSurface(bitmap);
-	bitmap=SDL_LoadBMP("tetimg/quit.bmp");
-	if ( bitmap == NULL ) {
-		printf("Unable to load all bitmaps.\n");
-		exit(1);
-	}
-	quit.x=60;
-	quit.y=340;
-	quit.w=bitmap->w;
-	quit.h=bitmap->h;
-	SDL_BlitSurface(bitmap,NULL,screen,&quit);
-
-	SDL_FreeSurface(bitmap);
-	bitmap=SDL_LoadBMP("tetimg/author.bmp");
-	if ( bitmap == NULL ) {
-		printf("Unable to load all bitmaps.\n");
-		exit(1);
-	}
-	dst.x=0;
-	dst.y=100;
-	dst.w=bitmap->w;
-	dst.h=bitmap->h;
-	SDL_BlitSurface(bitmap,NULL,screen,&dst);
-	
-	SDL_FreeSurface(bitmap);
-	bitmap=SDL_LoadBMP("tetimg/level.bmp");
-	if ( bitmap == NULL ) {
-		printf("Unable to load all bitmaps.\n");
-		exit(1);
-	}
-	dst.x=270;
-	dst.y=20;
-	dst.w=bitmap->w;
-	dst.h=bitmap->h;
-	SDL_BlitSurface(bitmap,NULL,screen,&dst);
-	
-	SDL_FreeSurface(bitmap);
-	bitmap=SDL_LoadBMP("tetimg/score.bmp");
-	if ( bitmap == NULL ) {
-		printf("Unable to load all bitmaps.\n");
-		exit(1);
-	}
-	dst.x=270;
-	dst.y=120;
-	dst.w=bitmap->w;
-	dst.h=bitmap->h;
-	SDL_BlitSurface(bitmap,NULL,screen,&dst);
-	SDL_FreeSurface(bitmap);
-	bitmap=SDL_LoadBMP("tetimg/high.bmp");
-	if ( bitmap == NULL ) {
-		printf("Unable to load all bitmaps.\n");
-		exit(1);
-	}
-	dst.x=270;
-	dst.y=220;
-	dst.w=bitmap->w;
-	dst.h=bitmap->h;
-	SDL_BlitSurface(bitmap,NULL,screen,&dst);
-	SDL_FreeSurface(bitmap);
-	bitmap=SDL_LoadBMP("tetimg/next.bmp");
-	if ( bitmap == NULL ) {
-		printf("Unable to load all bitmaps.\n");
-		exit(1);
-	}
-	dst.x=270;
-	dst.y=320;
-	dst.w=bitmap->w;
-	dst.h=bitmap->h;
-	SDL_BlitSurface(bitmap,NULL,screen,&dst);
-
-	SDL_FreeSurface(bitmap);
-	bitmap=SDL_LoadBMP("tetimg/line.bmp");
-	if ( bitmap == NULL ) {
-		printf("Unable to load all bitmaps.\n");
-		exit(1);
-	}
-	dst.x=0;
-	dst.y=480;
-	dst.w=bitmap->w;
-	dst.h=bitmap->h;
-	SDL_BlitSurface(bitmap,NULL,screen,&dst);
-
-	SDL_FreeSurface(bitmap);
-	bitmap=SDL_LoadBMP("tetimg/vline.bmp");
-	if ( bitmap == NULL ) {
-		printf("Unable to load all bitmaps.\n");
-		exit(1);
-	}
-	dst.x=240;
-	dst.y=0;
-	dst.w=bitmap->w;
-	dst.h=bitmap->h;
-	SDL_BlitSurface(bitmap,NULL,screen,&dst);
-
-   /* This is my little routine for showing the numbers in the right places.
-      First we set it up to put zeros using the src.x and src.y - given the right
-      width and height, this uses a rectangle on the one large image of numbers to
-      pick out just a zero and put it at the dst location. */
-
-    src.x=0;
-    src.y=0;
-    src.w=16;
-    src.h=32;
-    dst.x=350;
-    dst.y=65;
-    dst.w=16;
-    dst.h=32;
-    SDL_BlitSurface(numbers,&src,screen,&dst);
-    dst.y=165;
-    SDL_BlitSurface(numbers,&src,screen,&dst);
-
-    /* To show the high score, we start from the right and put numbers going left
-       until we run out of numbers in the high score. */
-    dst.y=265;
-    dst.x=367;
-    score=hiscore;
-    while(score>0)
-    {
-        src.x=(score%10)*16;
-        dst.x=dst.x-17;
-        SDL_BlitSurface(numbers,&src,screen,&dst);
-        score=(long)score/10;
-    }    
-
-    /* Swap the buffers to show the screen. */        
-	SDL_Flip(screen);
-	menuevent=0;
-	/* At main menu, waiting for an event. */
-		while(!menuevent) {
-			if (SDL_PollEvent(&event)>0)
-			switch (event.type) {
-                                /* Mouse button pressed! */
-				case SDL_MOUSEBUTTONDOWN:
-                     /* if they clicked in the "play" rectangle */
-					if ((event.button.x>=play.x && event.button.x<=play.x+play.w) && (event.button.y>=play.y && event.button.y<=play.y+play.h)){
-						playing=1;
-						menuevent=1;
-					}
-                     /* if they clicked in the "quit" rectangle */
-					if ((event.button.x>=quit.x && event.button.x<=quit.x+quit.w) && (event.button.y>=quit.y && event.button.y<=quit.y+quit.h)){
-						menuevent=1;
-						/* (save settings) */
-                         sprintf(tempstring,"%d %d %ld",muson,sfxon,hiscore);
-                         hifile=fopen("hiscore.dat","w");
-                         fputs(tempstring,hifile);
-			             fclose(hifile);
-						goto theend;
-					}
-                     /* if they clicked in the "music" rectangle */
-					if ((event.button.x>=mus.x && event.button.x<=mus.x+mus.w) && (event.button.y>=mus.y && event.button.y<=mus.y+mus.h)){
-                        if (muson==1)
-                          Mix_HaltMusic();
-                        else
-                          	Mix_PlayMusic(music, -1);
-						muson=-muson;
-						menuevent=1;
-					}
-					if ((event.button.x>=sfx.x && event.button.x<=sfx.x+sfx.w) && (event.button.y>=sfx.y && event.button.y<=sfx.y+sfx.h)){
-                     /* if they clicked in the "sfx" rectangle */
-						sfxon=-sfxon;
-						menuevent=1;
-					}
-					break;
-				case SDL_KEYUP:
-					/* Keypress: Enter starts a game. */
-					if (event.key.keysym.sym == SDLK_RETURN){
-						playing=1;
-						menuevent=1;
-					}
-					break;
-				case SDL_QUIT:
-                     /* if they quit some other way */
-                    sprintf(tempstring,"%d %d %ld",muson,sfxon,hiscore);
-                    hifile=fopen("hiscore.dat","w");
-                    fputs(tempstring,hifile);
-			        fclose(hifile);
-					goto theend;
-					break;
-				default:
-					break;
-			}
-		}
-	   }
-	   
-    /* Black out the play area */
-    dst.x=0;
-    dst.y=0;
-    dst.w=240;
-    dst.h=480;
-	SDL_FillRect(screen,&dst,SDL_MapRGB(screen->format,0,0,0));
-	
-    /* Set the game to starting conditions */
-	lines=0;
-	level=0;
-    nextmove=0;
-    score=0;
-
-    /* Come up with the first piece */
-    lookahead=(int)(7*(double)rand() / (RAND_MAX+1.0));
-        switch(lookahead){
-				case 0:
-					nextpiece.b1x=-1;	/* Line */
-					nextpiece.b1y=0;
-					nextpiece.b2x=0;
-					nextpiece.b2y=0;
-					nextpiece.b3x=1;
-					nextpiece.b3y=0;
-					nextpiece.b4x=2;
-					nextpiece.b4y=0;
-					break;
-				case 1:
-					nextpiece.b1x=-1;	/* Backwards L */
-					nextpiece.b1y=0;
-					nextpiece.b2x=0;
-					nextpiece.b2y=0;
-					nextpiece.b3x=1;
-					nextpiece.b3y=0;
-					nextpiece.b4x=1;
-					nextpiece.b4y=1;
-					break;
-				case 2:
-					nextpiece.b1x=-1;	/* L */
-					nextpiece.b1y=1;
-					nextpiece.b2x=-1;
-					nextpiece.b2y=0;
-					nextpiece.b3x=0;
-					nextpiece.b3y=0;
-					nextpiece.b4x=1;
-					nextpiece.b4y=0;
-					break;
-				case 3:
-					nextpiece.b1x=0;	/* Square */
-					nextpiece.b1y=0;
-					nextpiece.b2x=1;
-					nextpiece.b2y=0;
-					nextpiece.b3x=1;
-					nextpiece.b3y=-1;
-					nextpiece.b4x=0;
-					nextpiece.b4y=-1;
-					break;
-				case 4:
-					nextpiece.b1x=1;	/* S */
-					nextpiece.b1y=0;
-					nextpiece.b2x=0;
-					nextpiece.b2y=0;
-					nextpiece.b3x=0;
-					nextpiece.b3y=1;
-					nextpiece.b4x=-1;
-					nextpiece.b4y=1;
-					break;
-				case 5:
-					nextpiece.b1x=1;	/* Z */
-					nextpiece.b1y=1;
-					nextpiece.b2x=0;
-					nextpiece.b2y=1;
-					nextpiece.b3x=0;
-					nextpiece.b3y=0;
-					nextpiece.b4x=-1;
-					nextpiece.b4y=0;
-					break;
-				case 6:
-					nextpiece.b1x=0;	/* T */
-					nextpiece.b1y=1;
-					nextpiece.b2x=-1;
-					nextpiece.b2y=0;
-					nextpiece.b3x=0;
-					nextpiece.b3y=0;
-					nextpiece.b4x=1;
-					nextpiece.b4y=0;
-					break;
-				default:
-					printf("Abnormal exit!\n");
-					goto theend;
-			}
-/* I repeat the above code later - that's bad programming practice.  But it was easier. */
-
-    /* Reset board. */
-	for(i=0;i<10;i++)
-	 for(j=0;j<21;j++)
-	  board[i][j]=0;
-	kD=0;
-
-	paused=0;
-
-	while (playing) {	// All right, they're playing.
-		starting=SDL_GetTicks();
-    /* Nextmove==0 means we need to do line checking and piece giving. */
-		if (nextmove==0) {
-			for(j=0;j<10;j++)
-				if(board[j][1]==1)	/* Piece sticking too high - game over */
-				{
-                   /* Load the "you lose" sign and display, also save high score */
-					SDL_FreeSurface(bitmap);
-					bitmap=SDL_LoadBMP("tetimg/lose.bmp");
-					if ( bitmap == NULL ) {
-						printf("GAME OVER!\n");
-						playing=0;
-					}
-					dst.x=0;
-					dst.y=128;			//YOU LOSE AT GAME
-					dst.w=bitmap->w;
-					dst.h=bitmap->h;
-					SDL_BlitSurface(bitmap,NULL,screen,&dst);
-					SDL_Flip(screen);
-                    sprintf(tempstring,"%d %d %ld",muson,sfxon,hiscore);
-                    hifile=fopen("hiscore.dat","w");
-                    fputs(tempstring,hifile);
-			        fclose(hifile);
-					SDL_Delay(1000);
-					playing=0;
-				}
-
-			tetri=0;
-         /* Check if they made any lines */
-			for(i=0;i<21;i++){
-				linectr=0;
-				for(j=0;j<10;j++)
-					if(board[j][i]!=0)
-						linectr++;
-				if(linectr==10)		/* A line is solid */
-				{
-				    tetri++;
-					dst.x=0;
-					dst.y=24;			/* We'll shift the area above the line to just cover it */
-					src.x=0;      /* that makes it very simple! */
-					src.y=0;
-					src.w=240;
-					src.h=24*(i-1);
-					SDL_BlitSurface(screen,&src,screen,&dst);
-					src.h=24;
-					SDL_FillRect(screen,&src,SDL_MapRGB(screen->format,0,0,0));
-                    /* and fill the top part with black too */
-					for(p=i;p>0;p--)
-						for(q=0;q<10;q++)
-							board[q][p]=board[q][p-1];  /* now update the array */
-					for(q=0;q<10;q++)
-						board[q][0]=0;
-					lines++;
-					if (lines>9)      /* if they got 10 lines, level up! */
-					{
-						lines=lines-10;
-						level++;
-						if(level>9)
-						      level=9;
-						src.x=level*16;
-						src.y=0;
-						src.w=16;
-						src.h=32;
-						dst.x=350;     /* update the "level" display */
-						dst.y=65;
-						dst.w=16;
-						dst.h=32;
-						SDL_BlitSurface(numbers,&src,screen,&dst);
-					}
-				}
-              }				
-				if (tetri!=0)     /* If they made some lines */
-				{				
-    				if (tetri==1)    /* Scoring depends on how many you get at a time */
-    				    score++;
-        			else if(tetri==2)
-        			    score=score+3;
-        			else if(tetri==3)
-        			    score=score+6;
-        			else if(tetri==4)
-        			    score=score+10;
- 			    src.y=0;
- 			    src.w=16;
- 			    src.h=32;
- 			    dst.x=367;
- 			    dst.y=165;
- 			    dst.w=16;
- 			    dst.h=32;
- 			    if (score>hiscore)    /* Update score and high score as needed */
- 			      hiscore=score;
- 			    tscore=score;
- 			    while(tscore>0)
- 			    {
- 			        src.x=(tscore%10)*16;
- 			        dst.x=dst.x-17;
- 			        SDL_BlitSurface(numbers,&src,screen,&dst);
- 			        tscore=(long)tscore/10;
- 			        if (score==hiscore){
- 			          dst.y=265;
-    			        SDL_BlitSurface(numbers,&src,screen,&dst);
- 			          dst.y=165;
- 			      }
-
-              }    
-			}
-
-    /* Switch to next piece and copy next piece info to current piece */
-		cur=lookahead;
-		piece.b1x=nextpiece.b1x;
-		piece.b1y=nextpiece.b1y;
-		piece.b2x=nextpiece.b2x;
-		piece.b2y=nextpiece.b2y;
-		piece.b3x=nextpiece.b3x;
-		piece.b3y=nextpiece.b3y;
-		piece.b4x=nextpiece.b4x;
-		piece.b4y=nextpiece.b4y;
-
-    /* Come up with another new next piece. */
-    lookahead=(int)(7*(double)rand() / (RAND_MAX+1.0));
-        switch(lookahead){
-				case 0:
-					nextpiece.b1x=-1;	/* Line */
-					nextpiece.b1y=0;
-					nextpiece.b2x=0;
-					nextpiece.b2y=0;
-					nextpiece.b3x=1;
-					nextpiece.b3y=0;
-					nextpiece.b4x=2;
-					nextpiece.b4y=0;
-					break;
-				case 1:
-					nextpiece.b1x=-1;	/* Backwards L */
-					nextpiece.b1y=0;
-					nextpiece.b2x=0;
-					nextpiece.b2y=0;
-					nextpiece.b3x=1;
-					nextpiece.b3y=0;
-					nextpiece.b4x=1;
-					nextpiece.b4y=1;
-					break;
-				case 2:
-					nextpiece.b1x=-1;	/* L */
-					nextpiece.b1y=1;
-					nextpiece.b2x=-1;
-					nextpiece.b2y=0;
-					nextpiece.b3x=0;
-					nextpiece.b3y=0;
-					nextpiece.b4x=1;
-					nextpiece.b4y=0;
-					break;
-				case 3:
-					nextpiece.b1x=0;	/* Square */
-					nextpiece.b1y=0;
-					nextpiece.b2x=1;
-					nextpiece.b2y=0;
-					nextpiece.b3x=1;
-					nextpiece.b3y=-1;
-					nextpiece.b4x=0;
-					nextpiece.b4y=-1;
-					break;
-				case 4:
-					nextpiece.b1x=1;	/* S */
-					nextpiece.b1y=0;
-					nextpiece.b2x=0;
-					nextpiece.b2y=0;
-					nextpiece.b3x=0;
-					nextpiece.b3y=1;
-					nextpiece.b4x=-1;
-					nextpiece.b4y=1;
-					break;
-				case 5:
-					nextpiece.b1x=1;	/* Z */
-					nextpiece.b1y=1;
-					nextpiece.b2x=0;
-					nextpiece.b2y=1;
-					nextpiece.b3x=0;
-					nextpiece.b3y=0;
-					nextpiece.b4x=-1;
-					nextpiece.b4y=0;
-					break;
-				case 6:
-					nextpiece.b1x=0;	/* T */
-					nextpiece.b1y=1;
-					nextpiece.b2x=-1;
-					nextpiece.b2y=0;
-					nextpiece.b3x=0;
-					nextpiece.b3y=0;
-					nextpiece.b4x=1;
-					nextpiece.b4y=0;
-					break;
-				default:
-					printf("Abnormal exit!\n");
-					goto theend;
-			}
-			dst.x=264;
-			dst.y=348;
-			dst.w=116;
-			dst.h=156;
-
-    /* We're going to show the next piece right here, so fill the area in black */
-    /* first, then draw it where it needs to go. */
-		SDL_FillRect(screen,&dst,SDL_MapRGB(screen->format,0,0,0));
-		block[0].x=298+24*nextpiece.b1x;
-		block[0].y=390+24*nextpiece.b1y;
-		block[0].w=24;
-		block[0].h=24;
-		block[1].x=298+24*nextpiece.b2x;
-		block[1].y=390+24*nextpiece.b2y;
-		block[1].w=24;
-		block[1].h=24;
-		block[2].x=298+24*nextpiece.b3x;
-		block[2].y=390+24*nextpiece.b3y;
-		block[2].w=24;
-		block[2].h=24;
-		block[3].x=298+24*nextpiece.b4x;
-		block[3].y=390+24*nextpiece.b4y;
-		block[3].w=24;
-		block[3].h=24;
-		SDL_BlitSurface(bimg[lookahead],NULL,screen,&block[0]);
-		SDL_BlitSurface(bimg[lookahead],NULL,screen,&block[1]);
-		SDL_BlitSurface(bimg[lookahead],NULL,screen,&block[2]);
-		SDL_BlitSurface(bimg[lookahead],NULL,screen,&block[3]);
-
-    /* Put the current piece at top of screen and draw that too */
-
-		block[0].x=96+24*piece.b1x;
-		block[0].y=24*piece.b1y;
-		block[1].x=96+24*piece.b2x;
-		block[1].y=24*piece.b2y;
-		block[2].x=96+24*piece.b3x;
-		block[2].y=24*piece.b3y;
-		block[3].x=96+24*piece.b4x;
-		block[3].y=24*piece.b4y;
-
-    /* offl is offset from left, offt is offset from top */
-		offl=4;
-		offt=0;
-		nextmove=1;
-
-		} else {
-    /* otherwise the piece has to move down - blank it out, drop it a line, draw again */
-   			offt++;
-			SDL_FillRect(screen,&block[0],SDL_MapRGB(screen->format,0,0,0));
-			SDL_FillRect(screen,&block[1],SDL_MapRGB(screen->format,0,0,0));
-			SDL_FillRect(screen,&block[2],SDL_MapRGB(screen->format,0,0,0));
-			SDL_FillRect(screen,&block[3],SDL_MapRGB(screen->format,0,0,0));
-			block[0].x=24*(piece.b1x+offl);
-			block[0].y=24*(offt-1+piece.b1y);
-			block[1].x=24*(piece.b2x+offl);
-			block[1].y=24*(offt-1+piece.b2y);
-			block[2].x=24*(piece.b3x+offl);
-			block[2].y=24*(offt-1+piece.b3y);
-			block[3].x=24*(piece.b4x+offl);
-			block[3].y=24*(offt-1+piece.b4y);
-    /* if we hit absolute bottom */
-			if (piece.b1y+offt>19 || piece.b2y+offt>19 || piece.b3y+offt>19 || piece.b4y+offt>19 )
+			while (state == state_menu)
 			{
-				nextmove=0;
-				board[piece.b1x+offl][piece.b1y+offt]=1;
-				board[piece.b2x+offl][piece.b2y+offt]=1;
-				board[piece.b3x+offl][piece.b3y+offt]=1;
-				board[piece.b4x+offl][piece.b4y+offt]=1;
-    /* play a sound if enabled */
-				if (sfxon==1)
-    				Mix_PlayChannel(-1, crash, 0);
-				offt=0;
-			}else if (board[piece.b1x+offl][piece.b1y+offt+1]!=0 || board[piece.b2x+offl][piece.b2y+offt+1]!=0 || board[piece.b3x+offl][piece.b3y+offt+1]!=0 || board[piece.b4x+offl][piece.b4y+offt+1]!=0){
-    /* here it hit another existing piece and needs to stop */
-				nextmove=0;
-				board[piece.b1x+offl][piece.b1y+offt]=1;
-				board[piece.b2x+offl][piece.b2y+offt]=1;
-				board[piece.b3x+offl][piece.b3y+offt]=1;
-				board[piece.b4x+offl][piece.b4y+offt]=1;
-    /* play a sound if enabled */
-				if (sfxon==1)
-    				Mix_PlayChannel(-1, crash, 0);
-				offt=0;
-			} else {
-    /* otherwise it should be able to move down */
-   				block[0].y=block[0].y+24;
-				block[1].y=block[1].y+24;
-				block[2].y=block[2].y+24;
-				block[3].y=block[3].y+24;
+				// handle input first
+				SDL_Event event;
+				while (SDL_PollEvent(&event))
+				{
+					switch (event.type)
+					{
+						case SDL_VIDEOEXPOSE:
+							dirty = 1;
+							break;
+						case SDL_MOUSEBUTTONUP:
+							// Mouse button pressed!
+							if (in(event.button.x, event.button.y, 60, 240, 120, 64))
+								// if they clicked in the "play" rectangle
+								state = state_play;
+							else if (in(event.button.x, event.button.y, 60, 340, 120, 64))
+								// if they clicked in the "quit" rectangle
+								state = state_quit;
+							else if (in(event.button.x, event.button.y, 50, 185, 64, 32)) {
+								// if they clicked in the "music" rectangle
+								if (music_on) {
+									music_on = 0;
+									if (Mix_PlayingMusic()) Mix_HaltMusic();
+								} else {
+									music_on = 1;
+									if (music) Mix_PlayMusic(music, -1);
+								}
+								mus_dirty = 1;
+							}
+							else if (in(event.button.x, event.button.y, 140, 185, 64, 32)) {
+								// if they clicked in the "sfx" rectangle
+								sfx_on = ! sfx_on;
+								sfx_dirty = 1;
+							}
+							break;
+						case SDL_KEYUP:
+							// Keypress: Enter starts a game.
+							if (event.key.keysym.sym == SDLK_RETURN)
+								state = state_play;
+							else if (event.key.keysym.sym == SDLK_ESCAPE)
+								state = state_quit;
+							break;
+						case SDL_QUIT:
+							// if they quit some other way
+							state = state_quit;
+					}
+				}
+
+				// here we draw the main menu
+				int needs_flip = 0;
+				if (dirty) {
+					/* basically the main menu works like this:  we'll fill the whole screen
+						in black, then open all the images one by one to make up the screen
+						including borders, title and buttons and checkboxes, etc.  Also we
+						draw the current high score on the right. */
+					SDL_FillRect(screen, NULL, black);
+
+					blit(0, 0, title);
+					blit(60, 240, play);
+					blit(60, 340, quit);
+					blit(35, 105, author);
+					blit(270, 20, level);
+					blit(270, 120, score);
+					blit(270, 220, high);
+					blit(270, 320, next);
+					blit(0, 480, line);
+					blit(240, 0, vline);
+
+					blit_number(350, 65, 0);
+					blit_number(350, 165, 0);
+					blit_number(350, 265, hiscore);
+
+					mus_dirty = 1;
+					sfx_dirty = 1;
+
+					needs_flip = 1;
+				}
+
+				if (mus_dirty) {
+					blit(50, 185, (music_on ? musicon : musicoff));
+					needs_flip = 1;
+				}
+
+				if (sfx_dirty) {
+					blit(140, 185, (sfx_on ? sfxon : sfxoff));
+					needs_flip = 1;
+				}
+
+				if (needs_flip) {
+					// Swap the buffers to show the screen.
+					SDL_Flip(screen);
+
+					dirty = 0;
+					mus_dirty = 0;
+					sfx_dirty = 0;
+				}
+
+				SDL_Delay(1);
 			}
 		}
-    /* draw the piece */
-  		SDL_BlitSurface(bimg[cur],NULL,screen,&block[0]);
-		SDL_BlitSurface(bimg[cur],NULL,screen,&block[1]);
-		SDL_BlitSurface(bimg[cur],NULL,screen,&block[2]);
-		SDL_BlitSurface(bimg[cur],NULL,screen,&block[3]);
-		SDL_Flip(screen);
+		else if (state == state_play)
+		{
+			/* PLAY MODE */
 
-		if (nextmove != 0) {
-		offt++;
-    /* The piece has moved down, now we can start looking for keypresses */
-		while (starting+(250-level*20)>SDL_GetTicks() && starting+(250-kD*220)>SDL_GetTicks() && nextmove!=0){
-			if(paused==1) 
-				starting=SDL_GetTicks();
-			if (SDL_PollEvent(&event)>0)
-			switch (event.type) {
-				case SDL_KEYUP:
-					if (event.key.keysym.sym == SDLK_DOWN)
-    /* They pressed down so go ahead and stop looking for events, just drop us once. */
-						kD=0;
-					break;
+			// Set the game to starting conditions
+			//	points etc
+			int game_lines = 0;
+			int game_level = 0;
+			int game_score = 0;
+			int gameover = 0;
 
-				case SDL_KEYDOWN:
-					if(event.key.keysym.sym==SDLK_SPACE)
+			// keyboard states
+			int paused = 0;
+			int drop_held = 0;
+
+			// board positions - a board is 20 lines high.
+			char board[20][10] = {{0}};
+
+			// x and y positions of the four squares making one piece
+			int piece_x[4];
+			int piece_y[4];
+
+			// generate our two pieces, the current and the next
+			int piece_cur = rand() % 7;
+			for (int i = 0; i < 4; i++)
+			{
+				piece_x[i] = base_piece_x[piece_cur][i];
+				piece_y[i] = base_piece_y[piece_cur][i];
+			}
+			int piece_next = rand() % 7;
+
+			// current x/y position on the board
+			int x = 4;
+			int y = 0;
+
+			// trigger redraw flags
+			int dirty = 1;
+
+			int field_dirty = 1;
+			int next_piece_dirty = 1;
+			int score_dirty = 1;
+
+			Uint32 clock = SDL_GetTicks();
+			while (state == state_play)
+			{
+				// Collect input
+				int left_push = 0;
+				int right_push = 0;
+				int rotate_push = 0;
+
+				SDL_Event event;
+				while (SDL_PollEvent(&event))
+				{
+					switch (event.type) {
+						case SDL_ACTIVEEVENT:
+							// Minimizing the window pauses the game
+							if ( ( (event.active.state & SDL_APPACTIVE) || (event.active.state & SDL_APPINPUTFOCUS) ) &&
+								event.active.gain == 0) {
+								SDL_WM_SetCaption("Modest Bricks - PAUSED (SPACE resumes)", NULL);
+								paused = 1;
+							}
+							break;
+						case SDL_VIDEOEXPOSE:
+							// Window reveal triggers a full-screen redraw
+							dirty = 1;
+							break;
+						case SDL_KEYUP:
+							// Handle key release
+							if (event.key.keysym.sym == SDLK_DOWN)
+								drop_held = 0;
+							else if (event.key.keysym.sym == SDLK_ESCAPE)
+								state = state_menu;
+							break;
+						case SDL_KEYDOWN:
+							// Key push events
+							if (event.key.keysym.sym == SDLK_DOWN)
+								drop_held = 1;
+							else if (event.key.keysym.sym == SDLK_UP)
+								rotate_push = 1;
+							else if (event.key.keysym.sym == SDLK_LEFT)
+								left_push = 1;
+							else if (event.key.keysym.sym == SDLK_RIGHT)
+								right_push = 1;
+							else if (event.key.keysym.sym == SDLK_SPACE) {
+								if(paused)
+								{
+									SDL_WM_SetCaption("Modest Bricks", NULL);
+									clock = SDL_GetTicks();
+									paused = 0;
+								} else {
+									SDL_WM_SetCaption("Modest Bricks - PAUSED (SPACE resumes)", NULL);
+									paused = 1;
+								}
+							}
+							break;
+						case SDL_QUIT:
+							// Application exit
+							state = state_quit;
+					}
+				}
+
+				// Apply input and do game updates
+				if (! paused)
+				{
+					if (left_push && (! test_overlap(board, x - 1, y, piece_x, piece_y)))
 					{
-						if(paused==0)
+						x--;
+						field_dirty = 1;
+					}
+					if (right_push && (! test_overlap(board, x + 1, y, piece_x, piece_y)))
+					{
+						x++;
+						field_dirty = 1;
+					}
+					if (rotate_push)
+					{
+						if (piece_cur != 3)
 						{
-							SDL_WM_SetCaption("Modest Bricks - PAUSED (SPACE resumes)", NULL);
-							paused=1;
-						}else{
-							paused=0;
-							SDL_WM_SetCaption("Modest Bricks", NULL);
+							int new_piece_x[4];
+							int new_piece_y[4];
+
+							for (int i = 0; i < 4; i++)
+							{
+								new_piece_x[i] = -piece_y[i];
+								new_piece_y[i] = piece_x[i];
+							}
+
+							if (! test_overlap(board, x, y, new_piece_x, new_piece_y))
+							{
+								for (int i = 0; i < 4; i++)
+								{
+									piece_x[i] = new_piece_x[i];
+									piece_y[i] = new_piece_y[i];
+								}
+
+								field_dirty = 1;
+							}
 						}
 					}
-    					if (event.key.keysym.sym == SDLK_LEFT)
-		if (piece.b1x+offl>0 && piece.b2x+offl>0 && piece.b3x+offl>0 && piece.b4x+offl>0)
-			if(board[piece.b1x+offl-1][piece.b1y+offt]==0 && board[piece.b2x+offl-1][piece.b2y+offt]==0 && board[piece.b3x+offl-1][piece.b3y+offt]==0 && board[piece.b4x+offl-1][piece.b4y+offt]==0)
-			{
-				offl--;
-				SDL_FillRect(screen,&block[0],SDL_MapRGB(screen->format,0,0,0));
-				SDL_FillRect(screen,&block[1],SDL_MapRGB(screen->format,0,0,0));
-				SDL_FillRect(screen,&block[2],SDL_MapRGB(screen->format,0,0,0));
-				SDL_FillRect(screen,&block[3],SDL_MapRGB(screen->format,0,0,0));
-				block[0].x=block[0].x-24;
-				block[1].x=block[1].x-24;
-				block[2].x=block[2].x-24;
-				block[3].x=block[3].x-24;
-				SDL_BlitSurface(bimg[cur],NULL,screen,&block[0]);
-				SDL_BlitSurface(bimg[cur],NULL,screen,&block[1]);
-				SDL_BlitSurface(bimg[cur],NULL,screen,&block[2]);
-				SDL_BlitSurface(bimg[cur],NULL,screen,&block[3]);
-				SDL_Flip(screen);
-			}
 
-					if (event.key.keysym.sym == SDLK_RIGHT)
-        		if (piece.b1x+offl<9 && piece.b2x+offl<9 && piece.b3x+offl<9 && piece.b4x+offl<9)
-			if(board[piece.b1x+offl+1][piece.b1y+offt]==0 && board[piece.b2x+offl+1][piece.b2y+offt]==0 && board[piece.b3x+offl+1][piece.b3y+offt]==0 && board[piece.b4x+offl+1][piece.b4y+offt]==0)
-			{
-				offl++;
-				SDL_FillRect(screen,&block[0],SDL_MapRGB(screen->format,0,0,0));
-				SDL_FillRect(screen,&block[1],SDL_MapRGB(screen->format,0,0,0));
-				SDL_FillRect(screen,&block[2],SDL_MapRGB(screen->format,0,0,0));
-				SDL_FillRect(screen,&block[3],SDL_MapRGB(screen->format,0,0,0));
-				block[0].x=block[0].x+24;
-				block[1].x=block[1].x+24;
-				block[2].x=block[2].x+24;
-				block[3].x=block[3].x+24;
-				SDL_BlitSurface(bimg[cur],NULL,screen,&block[0]);
-				SDL_BlitSurface(bimg[cur],NULL,screen,&block[1]);
-				SDL_BlitSurface(bimg[cur],NULL,screen,&block[2]);
-				SDL_BlitSurface(bimg[cur],NULL,screen,&block[3]);
-				SDL_Flip(screen);
-			}
-					if (event.key.keysym.sym == SDLK_UP)
-
-   		if (cur != 3 && (offt-piece.b1x<21 && offt-piece.b2x<21 && offt-piece.b3x<21 && offt-piece.b4x<21) && (piece.b1y+offl>-1 && piece.b2y+offl>-1 && piece.b3y+offl>-1 && piece.b4y+offl>-1) && (piece.b1y+offl<10 && piece.b2y+offl<10 && piece.b3y+offl<10 && piece.b4y+offl<10) && (board[piece.b1y+offl][offt-piece.b1x]==0 &&board[piece.b2y+offl][offt-piece.b2x]==0 &&board[piece.b3y+offl][offt-piece.b3x]==0 &&board[piece.b4y+offl][offt-piece.b4x]==0 ))
-		{
-    /* As long as they're not the square, and rotating won't hit existing pieces, */
-    /* here's a cheap way to do rotates: */
-			i=piece.b1x;
-			piece.b1x=piece.b1y;
-			piece.b1y=-i;
-			i=piece.b2x;
-			piece.b2x=piece.b2y;
-			piece.b2y=-i;
-			i=piece.b3x;
-			piece.b3x=piece.b3y;
-			piece.b3y=-i;
-			i=piece.b4x;
-			piece.b4x=piece.b4y;
-			piece.b4y=-i;
-			SDL_FillRect(screen,&block[0],SDL_MapRGB(screen->format,0,0,0));
-			SDL_FillRect(screen,&block[1],SDL_MapRGB(screen->format,0,0,0));
-			SDL_FillRect(screen,&block[2],SDL_MapRGB(screen->format,0,0,0));
-			SDL_FillRect(screen,&block[3],SDL_MapRGB(screen->format,0,0,0));
-			block[0].x=24*(piece.b1x+offl);
-			block[0].y=24*(offt-1+piece.b1y);
-			block[1].x=24*(piece.b2x+offl);
-			block[1].y=24*(offt-1+piece.b2y);
-			block[2].x=24*(piece.b3x+offl);
-			block[2].y=24*(offt-1+piece.b3y);
-			block[3].x=24*(piece.b4x+offl);
-			block[3].y=24*(offt-1+piece.b4y);
-			SDL_BlitSurface(bimg[cur],NULL,screen,&block[0]);
-			SDL_BlitSurface(bimg[cur],NULL,screen,&block[1]);
-			SDL_BlitSurface(bimg[cur],NULL,screen,&block[2]);
-			SDL_BlitSurface(bimg[cur],NULL,screen,&block[3]);
-			SDL_Flip(screen);
-		}
-					if (event.key.keysym.sym == SDLK_DOWN)
-    /* They pressed down so go ahead and stop looking for events, just drop us once. */
-						kD=1;
-					if (event.key.keysym.sym == SDLK_ESCAPE)
+					// Timer-based effects
+					Uint32 now = SDL_GetTicks();
+					if (now > clock + (drop_held ? 30 : (300 - game_level * 30)))
 					{
-    /* Escape sends us back to main menu. */
-                        sprintf(tempstring,"%d %d %ld",muson,sfxon,score);
-				        hifile=fopen("hiscore.dat","w");
-                         fputs(tempstring,hifile);
-				        fclose(hifile);
-						playing=0;
-                    }
-					break;
-				case SDL_QUIT:
-    /* They quit some other way.  Save our settings and high score. */
-                    sprintf(tempstring,"%d %d %ld",muson,sfxon,score);
-                    hifile=fopen("hiscore.dat","w");
-                    fputs(tempstring,hifile);
-				    fclose(hifile);
-					playing=0;
-					goto theend;
-					break;
-				default:
-					break;
+						// reset the clock
+						clock = now;
+
+						if (! test_overlap(board, x, y + 1, piece_x, piece_y))
+						{
+							y++;
+						} else {
+							// piece cannot fall further
+							//	lock piece into place
+							for (int i = 0; i < 4; i++) {
+								int py = y + piece_y[i];
+								if (py >= 0)
+									board[py][x + piece_x[i]] = piece_cur + 1;
+							}
+
+							// Play sound
+							if (sfx_on && chunk) Mix_PlayChannel(-1, chunk, 0);
+
+							// test completed lines
+							int tetri = 0;
+							for(int j = 0; j < 20; j++)
+							{
+								int i;
+								for(i = 0; i < 10; i++)
+									if(board[j][i] == 0) break;
+
+								if (i == 10) {
+									tetri++;
+
+									// shift everything down from the top
+									memmove(&board[1], &board[0], 10 * j);
+									// set top line to empty
+									memset(&board[0], 0, 10);
+
+									game_lines++;
+									if (game_lines > 9)
+									{
+										// if they got 10 lines, level up!
+										game_lines = game_lines-10;
+										game_level++;
+										if(game_level > 9)
+											game_level = 9;
+									}
+
+									score_dirty = 1;
+								}
+							}
+
+							// Scoring depends on how many you get at a time
+							if (tetri == 1)
+								game_score++;
+							else if(tetri == 2)
+								game_score += 3;
+							else if(tetri == 3)
+								game_score += 6;
+							else if(tetri == 4)
+								game_score += 10;
+
+							if (game_score > hiscore)
+								hiscore = game_score;
+
+							// Switch to next piece and copy next piece info to current piece
+							piece_cur = piece_next;
+							for (int i = 0; i < 4; i++)
+							{
+								piece_x[i] = base_piece_x[piece_cur][i];
+								piece_y[i] = base_piece_y[piece_cur][i];
+							}
+
+							piece_next = rand() % 7;
+
+							next_piece_dirty = 1;
+
+							x = 4;
+							y = 0;
+
+							// gameover happens if the new piece has nowhere to go
+							if (test_overlap(board, x, y, piece_x, piece_y))
+							{
+								gameover = 1;
+								state = state_menu;
+							}
+						}
+
+						field_dirty = 1;
+					}
+				}
+
+				/* DRAW TIME */
+				int needs_flip = 0;
+				if (dirty)
+				{
+					/* redraw entire screen */
+
+					// blank UI areas
+					SDL_Rect r;
+					r.x = 264;
+					r.y = 0;
+					r.w = 116;
+					r.h = 480;
+					SDL_FillRect(screen, &r, black);
+
+					// draw ui elements
+					blit(270, 20, level);
+					blit(270, 120, score);
+					blit(270, 220, high);
+					blit(270, 320, next);
+					blit(0, 480, line);
+					blit(240, 0, vline);
+
+					// set flags for other items to show
+					field_dirty = 1;
+					next_piece_dirty = 1;
+					score_dirty = 1;
+
+					needs_flip = 1;
+				}
+
+				if (field_dirty) {
+					/* redraw board */
+					SDL_Rect r;
+					r.x = r.y = 0;
+					r.w = 240;
+					r.h = 480;
+					SDL_FillRect(screen, &r, black);
+
+					// draw saved board
+					for (int j = 0; j < 20; j++)
+						for (int i = 0; i < 10; i++)
+							if (board[j][i]) blit(i * 24, j * 24, bimg[board[j][i] - 1]);
+
+					// draw current piece
+					draw_piece(24 * x, 24 * y, piece_x, piece_y, bimg[piece_cur]);
+
+					needs_flip = 1;
+				}
+
+				if (next_piece_dirty)
+				{
+					// clear the area where next piece appears
+					SDL_Rect r;
+					r.x = 274;
+					r.y = 366;
+					r.w = r.h = 96;
+
+					SDL_FillRect(screen, &r, black);
+
+					// draw next piece
+					draw_piece(298, 390, base_piece_x[piece_next], base_piece_y[piece_next], bimg[piece_next]);
+
+					needs_flip = 1;
+				}
+
+				if (score_dirty)
+				{
+					// redraw the score, level, and high score fields
+					SDL_Rect r;
+					r.x = 264;
+					r.y = 65;
+					r.w = 116;
+					r.h = 32;
+					SDL_FillRect(screen, &r, black);
+					blit_number(350, 65, game_level);
+
+					r.y = 165;
+					SDL_FillRect(screen, &r, black);
+					blit_number(350, 165, game_score);
+
+					r.y = 265;
+					SDL_FillRect(screen, &r, black);
+					blit_number(350, 265, hiscore);
+
+					needs_flip = 1;
+				}
+
+				// gameover sign
+				if (gameover) {
+					blit(0, 128, lose);
+
+					needs_flip = 1;
+				}
+
+				/* Swap the buffers to show the screen. */
+				if (needs_flip) {
+					dirty = 0;
+					field_dirty = 0;
+					next_piece_dirty = 0;
+					score_dirty = 0;
+
+					SDL_Flip(screen);
+				}
+
+				if (gameover) {
+					// one second on Game Over and return to main menu
+					SDL_Delay(1000);
+				} else {
+					SDL_Delay(1);
+				}
 			}
 		}
-		offt--;
-	}	/* while playing && !quitter */
-	}}
+	} while (state != state_quit);
 
-/* That's right - I used a label and a goto.  It just made things soooooo much easier. */
-/* Don't tell your teachers! */
+	// Save settings
+	sprintf(tempstring, "%1d\n%1d\n%11d", music_on, sfx_on, hiscore);
+	hifile = fopen("hiscore.dat", "w");
+	if (hifile)
+	{
+		fputs(tempstring, hifile);
+		fclose(hifile);
+	}
 
-theend:
-    /* Make sure you free your surfaces, except the main screen! */
-	SDL_FreeSurface(bimg[6]);
-	SDL_FreeSurface(bimg[5]);
-	SDL_FreeSurface(bimg[4]);
-	SDL_FreeSurface(bimg[3]);
-	SDL_FreeSurface(bimg[2]);
-	SDL_FreeSurface(bimg[1]);
-	SDL_FreeSurface(bimg[0]);
-	SDL_FreeSurface(bitmap);
-    /* Turn off the music and shut it all down */
-  Mix_HaltMusic();
-  Mix_FreeMusic(music);
-  Mix_CloseAudio();
-    /* Let SDL do its quitting thing */
-	SDL_Quit();
+	// Turn off the music and shut it all down
+	Mix_FreeChunk(chunk);
+	Mix_FreeMusic(music);
+	Mix_CloseAudio();
+
+	// You can free your surfaces here, except the main screen!
+//	for (int i = 0; i < 7; i++)
+//		SDL_FreeSurface(bimg[i]);
+//	... etc ...
+
+	// Let SDL do its quitting thing
+	//	(this is already set by atexit, above)
+	//SDL_Quit();
+
+	return 0;
 }
