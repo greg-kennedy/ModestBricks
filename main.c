@@ -246,6 +246,9 @@ int main(int argc, char* argv[])
 	int music_on = 1;
 	int sfx_on = 1;
 
+	int game_level = 1;
+	int game_score = 0;
+
 	FILE* hifile = fopen("hiscore.dat", "r");
 	if (hifile)
 	{
@@ -352,8 +355,8 @@ int main(int argc, char* argv[])
 					blit(0, 480, line);
 					blit(240, 0, vline);
 
-					blit_number(350, 65, 0);
-					blit_number(350, 165, 0);
+					blit_number(350, 65, game_level);
+					blit_number(350, 165, game_score);
 					blit_number(350, 265, hiscore);
 
 					mus_dirty = 1;
@@ -391,8 +394,9 @@ int main(int argc, char* argv[])
 			// Set the game to starting conditions
 			//	points etc
 			int game_lines = 0;
-			int game_level = 0;
-			int game_score = 0;
+			game_level = 1;
+			game_score = 0;
+
 			int gameover = 0;
 
 			// keyboard states
@@ -419,9 +423,16 @@ int main(int argc, char* argv[])
 			int x = 4;
 			int y = 0;
 
+			// prev. x/y/piece positions
+			int prev_x;
+			int prev_y;
+			int prev_piece_x[4];
+			int prev_piece_y[4];
+
 			// trigger redraw flags
 			int dirty = 1;
 
+			int piece_dirty = 1;
 			int field_dirty = 1;
 			int next_piece_dirty = 1;
 			int score_dirty = 1;
@@ -486,17 +497,25 @@ int main(int argc, char* argv[])
 				}
 
 				// Apply input and do game updates
+				prev_x = x;
+				prev_y = y;
+				for (int i = 0; i < 4; i++)
+				{
+					prev_piece_x[i] = piece_x[i];
+					prev_piece_y[i] = piece_y[i];
+				}
+
 				if (! paused)
 				{
 					if (left_push && (! test_overlap(board, x - 1, y, piece_x, piece_y)))
 					{
 						x--;
-						field_dirty = 1;
+						piece_dirty = 1;
 					}
 					if (right_push && (! test_overlap(board, x + 1, y, piece_x, piece_y)))
 					{
 						x++;
-						field_dirty = 1;
+						piece_dirty = 1;
 					}
 					if (rotate_push)
 					{
@@ -519,14 +538,14 @@ int main(int argc, char* argv[])
 									piece_y[i] = new_piece_y[i];
 								}
 
-								field_dirty = 1;
+								piece_dirty = 1;
 							}
 						}
 					}
 
 					// Timer-based effects
 					Uint32 now = SDL_GetTicks();
-					if (now > clock + (drop_held ? 30 : (300 - game_level * 30)))
+					if (now > clock + (drop_held ? 50 : (500 - game_level * 50)))
 					{
 						// reset the clock
 						clock = now;
@@ -545,6 +564,9 @@ int main(int argc, char* argv[])
 
 							// Play sound
 							if (sfx_on && chunk) Mix_PlayChannel(-1, chunk, 0);
+
+							// mark playfield for redraw
+							field_dirty = 1;
 
 							// test completed lines
 							int tetri = 0;
@@ -570,10 +592,10 @@ int main(int argc, char* argv[])
 									if (game_lines > 9)
 									{
 										// if they got 10 lines, level up!
-										game_lines = game_lines-10;
-										game_level++;
-										if(game_level > 9)
-											game_level = 9;
+										game_lines -= 10;
+
+										if(game_level < 8)
+											game_level++;
 									}
 
 									score_dirty = 1;
@@ -594,6 +616,8 @@ int main(int argc, char* argv[])
 								hiscore = game_score;
 
 							// Switch to next piece and copy next piece info to current piece
+							x = 4;
+							y = 0;
 							piece_cur = piece_next;
 							for (int i = 0; i < 4; i++)
 							{
@@ -605,9 +629,6 @@ int main(int argc, char* argv[])
 
 							next_piece_dirty = 1;
 
-							x = 4;
-							y = 0;
-
 							// gameover happens if the new piece has nowhere to go
 							if (test_overlap(board, x, y, piece_x, piece_y))
 							{
@@ -616,7 +637,8 @@ int main(int argc, char* argv[])
 							}
 						}
 
-						field_dirty = 1;
+						// regardless, the piece has moved
+						piece_dirty = 1;
 					}
 				}
 
@@ -643,6 +665,7 @@ int main(int argc, char* argv[])
 					blit(240, 0, vline);
 
 					// set flags for other items to show
+					piece_dirty = 1;
 					field_dirty = 1;
 					next_piece_dirty = 1;
 					score_dirty = 1;
@@ -650,10 +673,20 @@ int main(int argc, char* argv[])
 					needs_flip = 1;
 				}
 
-				// TODO: The next block redraws the entire playfield
-				//	every frame, which is inefficient:
-				// It should be possible to split this from draw_piece
-				//  and only update the piece instead.
+				if (piece_dirty && !field_dirty) {
+					// erase the existing piece but only if we aren't also planning to erase the whole field
+					SDL_Rect r;
+					r.w = r.h = 24;
+					for (int i = 0; i < 4; i++)
+					{
+						r.x = 24 * (prev_x + prev_piece_x[i]);
+						r.y = 24 * (prev_y + prev_piece_y[i]);
+						if (r.y >= 0) SDL_FillRect(screen, &r, black);
+					}
+
+//					needs_flip = 1;
+				}
+
 				if (field_dirty) {
 					/* redraw board */
 					SDL_Rect r;
@@ -667,6 +700,10 @@ int main(int argc, char* argv[])
 						for (int i = 0; i < 10; i++)
 							if (board[j][i]) blit(i * 24, j * 24, bimg[board[j][i] - 1]);
 
+					needs_flip = 1;
+				}
+
+				if (piece_dirty) {
 					// draw current piece
 					draw_piece(24 * x, 24 * y, piece_x, piece_y, bimg[piece_cur]);
 
@@ -721,6 +758,8 @@ int main(int argc, char* argv[])
 				/* Swap the buffers to show the screen. */
 				if (needs_flip) {
 					dirty = 0;
+
+					piece_dirty = 0;
 					field_dirty = 0;
 					next_piece_dirty = 0;
 					score_dirty = 0;
