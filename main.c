@@ -211,6 +211,7 @@ int main(int argc, char* argv[])
 	SDL_Surface* line = load_image("tetimg/line.bmp");
 	SDL_Surface* vline = load_image("tetimg/vline.bmp");
 	SDL_Surface* lose = load_image("tetimg/lose.bmp");
+	SDL_Surface* pause = load_image("tetimg/pause.bmp");
 
 	//	Solid black color
 	const Uint32 black = SDL_MapRGB(screen->format, 0, 0, 0);
@@ -455,6 +456,7 @@ int main(int argc, char* argv[])
 								event.active.gain == 0) {
 								SDL_WM_SetCaption("Modest Bricks - PAUSED (SPACE resumes)", NULL);
 								paused = 1;
+								field_dirty = 1;
 							}
 							break;
 						case SDL_VIDEOEXPOSE:
@@ -484,9 +486,11 @@ int main(int argc, char* argv[])
 									SDL_WM_SetCaption("Modest Bricks", NULL);
 									clock = SDL_GetTicks();
 									paused = 0;
+									field_dirty = 1;
 								} else {
 									SDL_WM_SetCaption("Modest Bricks - PAUSED (SPACE resumes)", NULL);
 									paused = 1;
+									field_dirty = 1;
 								}
 							}
 							break;
@@ -552,7 +556,9 @@ int main(int argc, char* argv[])
 
 						if (! test_overlap(board, x, y + 1, piece_x, piece_y))
 						{
+							// room to fall another spot
 							y++;
+							piece_dirty = 1;
 						} else {
 							// piece cannot fall further
 							//	lock piece into place
@@ -565,7 +571,7 @@ int main(int argc, char* argv[])
 							// Play sound
 							if (sfx_on && chunk) Mix_PlayChannel(-1, chunk, 0);
 
-							// mark playfield for redraw
+							// mark playfield AND piece for redraw
 							field_dirty = 1;
 
 							// test completed lines
@@ -636,9 +642,6 @@ int main(int argc, char* argv[])
 								state = state_menu;
 							}
 						}
-
-						// regardless, the piece has moved
-						piece_dirty = 1;
 					}
 				}
 
@@ -700,12 +703,23 @@ int main(int argc, char* argv[])
 						for (int i = 0; i < 10; i++)
 							if (board[j][i]) blit(i * 24, j * 24, bimg[board[j][i] - 1]);
 
-					needs_flip = 1;
+					// always trigger piece redraw too
+					piece_dirty = 1;
+
+//					needs_flip = 1;
 				}
 
 				if (piece_dirty) {
 					// draw current piece
 					draw_piece(24 * x, 24 * y, piece_x, piece_y, bimg[piece_cur]);
+
+					needs_flip = 1;
+				}
+
+				if (field_dirty && paused)
+				{
+					// game paused sign
+					blit(0, 128, pause);
 
 					needs_flip = 1;
 				}
