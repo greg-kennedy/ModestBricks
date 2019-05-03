@@ -21,7 +21,7 @@
 /* ************************************************************************ */
 // CONSTANTS
 //	Define the piece shapes
-const int base_piece_x[7][4] = {
+static const int base_piece_x[7][4] = {
 	{ -1, 0, 1, 2 },	// line
 	{ -1, 0, 1, 1 },	// backwards L
 	{ -1, -1, 0, 1 },	// L
@@ -31,7 +31,7 @@ const int base_piece_x[7][4] = {
 	{ 0, -1, 0, 1 }		// T
 };
 
-const int base_piece_y[7][4] = {
+static const int base_piece_y[7][4] = {
 	{ 0, 0, 0, 0 },		// line
 	{ 0, 0, 0, -1 },	// backwards L
 	{ -1, 0, 0, 0 },	// L
@@ -43,13 +43,13 @@ const int base_piece_y[7][4] = {
 
 /* ************************************************************************ */
 // GLOBALS
-SDL_Surface* screen;
-SDL_Surface* numbers;
+static SDL_Surface* screen;
+static SDL_Surface* numbers;
 
 /* ************************************************************************ */
 // HELPER FUNCTIONS
 //	test if point is in rect
-int in(const int x, const int y,
+static int in(const int x, const int y,
 	const int r_x, const int r_y, const int r_w, const int r_h)
 {
 	return (x >= r_x && x < r_x + r_w && y >= r_y && y < r_y + r_h);
@@ -57,7 +57,7 @@ int in(const int x, const int y,
 
 // SDL additions
 //	Function to load a BMP from a file, and convert it to the screen surface
-SDL_Surface* load_image(const char* path)
+static SDL_Surface* load_image(const char* path)
 {
 	SDL_Surface* img = SDL_LoadBMP(path);
 	if (! img)
@@ -86,7 +86,7 @@ SDL_Surface* load_image(const char* path)
 }
 
 //	draw surface on screen at x, y
-void blit(const int x, const int y, SDL_Surface* s)
+static void blit(const int x, const int y, SDL_Surface* s)
 {
 	SDL_Rect rect;
 	rect.x = x;
@@ -95,7 +95,7 @@ void blit(const int x, const int y, SDL_Surface* s)
 }
 
 //	Draw a number (final digit positioned at x, y)
-void blit_number(const int x, const int y, int number)
+static void blit_number(const int x, const int y, int number)
 {
 	SDL_Rect src;
 	SDL_Rect dst;
@@ -121,7 +121,7 @@ void blit_number(const int x, const int y, int number)
 
 // Tetris Piece functions
 //	Draws a piece on the screen
-void draw_piece(const int x, const int y,
+static void draw_piece(const int x, const int y,
 	const int piece_x[4], const int piece_y[4], SDL_Surface* img)
 {
 	for (int i = 0; i < 4; i++)
@@ -134,7 +134,7 @@ void draw_piece(const int x, const int y,
 }
 
 //	Test if the piece overlaps the board at this point
-int test_overlap(char board[20][10], const int x, const int y,
+static int test_overlap(char board[20][10], const int x, const int y,
 	const int piece_x[4], const int piece_y[4])
 {
 	for (int i = 0; i < 4; i++)
